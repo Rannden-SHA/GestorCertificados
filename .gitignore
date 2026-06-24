@@ -1,0 +1,21 @@
+# === Datos privados — NO publicar (contienen datos fiscales reales) ===
+gestor/seed_data.py
+gestor/seed_data.json
+generate_seed.py
+LEEME.md
+
+# === Artefactos de compilacion ===
+build/
+build_public/
+dist/
+dist_public/
+*.spec
+
+# === Python ===
+__pycache__/
+*.pyc
+*.pyo
+
+# === Varios ===
+*.log
+.DS_Store

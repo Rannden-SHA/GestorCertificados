@@ -1,0 +1,7 @@
+customtkinter
+openpyxl
+pillow
+PyMuPDF
+pytesseract
+anthropic
+pyinstaller
