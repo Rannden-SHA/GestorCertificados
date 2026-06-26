@@ -5,27 +5,29 @@ from datetime import datetime
 from . import config, extractor, parser, api_engine
 
 
-def scan_folder(folder, records):
-    """Lista archivos soportados de la carpeta que aun no estan en la base de datos."""
-    nuevos = []
+def all_files(folder):
+    """Todos los archivos soportados de la carpeta como [(ruta, hash)]."""
+    out = []
     if not folder or not os.path.isdir(folder):
-        return nuevos
-    hashes = {r.get("hash") for r in records}
+        return out
     for fn in sorted(os.listdir(folder)):
         p = os.path.join(folder, fn)
         if not os.path.isfile(p):
             continue
-        ext = os.path.splitext(fn)[1].lower()
-        if ext not in config.SUPPORTED_EXT:
+        if os.path.splitext(fn)[1].lower() not in config.SUPPORTED_EXT:
             continue
         try:
             h = extractor.file_hash(p)
         except Exception:
             continue
-        if h in hashes:
-            continue
-        nuevos.append((p, h))
-    return nuevos
+        out.append((p, h))
+    return out
+
+
+def scan_folder(folder, records):
+    """Archivos de la carpeta que aun no estan en la base de datos."""
+    hashes = {r.get("hash") for r in records}
+    return [(p, h) for (p, h) in all_files(folder) if h not in hashes]
 
 
 def _empty(extra=""):

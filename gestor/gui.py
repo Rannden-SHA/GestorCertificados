@@ -13,7 +13,7 @@ from . import config, processor, store
 
 AUTOR = "Adrián Gisbert"
 ANYO = "2026"
-VERSION = "1.0"
+VERSION = "1.1"
 
 
 def asset(name):
@@ -342,7 +342,7 @@ class App(ctk.CTk):
     # ---- UI ----
     def _build_top(self):
         top = ctk.CTkFrame(self)
-        top.pack(fill="x", padx=12, pady=(12, 6))
+        top.pack(fill="x", padx=12, pady=(12, 4))
         ctk.CTkLabel(top, text="Gestor de Certificados Fiscales",
                      font=ctk.CTkFont(size=20, weight="bold")).pack(side="left", padx=8)
         ctk.CTkButton(top, text="A-", width=38, fg_color="gray",
@@ -350,17 +350,37 @@ class App(ctk.CTk):
         ctk.CTkButton(top, text="A+", width=38, fg_color="gray",
                       command=lambda: self._font_delta(1)).pack(side="left", padx=2)
         ctk.CTkButton(top, text="Ajustes", width=90, command=self._open_settings).pack(side="right", padx=4)
-        ctk.CTkButton(top, text="Info", width=70, fg_color="gray",
+        ctk.CTkButton(top, text="Info", width=64, fg_color="gray",
                       command=self._open_about).pack(side="right", padx=4)
-        ctk.CTkButton(top, text="Abrir Excel", width=110, command=self._open_excel).pack(side="right", padx=4)
-        ctk.CTkButton(top, text="Abrir carpeta", width=110, fg_color="gray",
+        ctk.CTkButton(top, text="Abrir Excel", width=104, command=self._open_excel).pack(side="right", padx=4)
+
+        # --- fila de carpeta ---
+        fr = ctk.CTkFrame(self)
+        fr.pack(fill="x", padx=12, pady=(0, 4))
+        ctk.CTkLabel(fr, text="Carpeta vigilada:",
+                     font=ctk.CTkFont(weight="bold")).pack(side="left", padx=(10, 6))
+        self.folder_lbl = ctk.CTkLabel(fr, text=self.cfg.get("watch_folder", ""), text_color="gray")
+        self.folder_lbl.pack(side="left")
+        self.btn_scan = ctk.CTkButton(fr, text="Analizar carpeta", width=150,
+                                      command=lambda: self._scan(manual=True))
+        self.btn_scan.pack(side="right", padx=4)
+        ctk.CTkButton(fr, text="Cambiar carpeta", width=130,
+                      command=self._choose_folder).pack(side="right", padx=4)
+        ctk.CTkButton(fr, text="Abrir en Explorador", width=150, fg_color="gray",
                       command=self._open_folder).pack(side="right", padx=4)
-        ctk.CTkButton(top, text="Analizar carpeta ahora", width=180,
-                      command=lambda: self._scan(manual=True)).pack(side="right", padx=4)
+
+        # --- zona de progreso (oculta hasta que se procesa) ---
+        self.prog_fr = ctk.CTkFrame(self)
+        self.prog = ctk.CTkProgressBar(self.prog_fr)
+        self.prog.set(0)
+        self.prog.pack(side="left", fill="x", expand=True, padx=(12, 8), pady=8)
+        self.prog_lbl = ctk.CTkLabel(self.prog_fr, text="", width=340, anchor="w")
+        self.prog_lbl.pack(side="left", padx=(0, 12))
 
     def _build_table(self):
         cont = ctk.CTkFrame(self)
         cont.pack(fill="both", expand=True, padx=12, pady=6)
+        self.table_cont = cont
         cols = ("nombre", "numero_fiscal", "tipo_documento", "fecha_sello",
                 "fecha_inicio", "fecha_fin", "caducidad", "estado_cad", "estado", "motor")
         heads = ("Nombre", "Numero fiscal", "Tipo", "Sello", "Inicio", "Fin",
@@ -485,42 +505,116 @@ class App(ctk.CTk):
             self._scan(manual=False)
         self.after(4000, self._poll)
 
+    def _choose_folder(self):
+        d = filedialog.askdirectory(
+            parent=self, title="Elige la carpeta donde están los certificados",
+            initialdir=self.cfg.get("watch_folder") or os.path.expanduser("~"), mustexist=True)
+        if not d:
+            return
+        self.cfg["watch_folder"] = d
+        config.save_config(self.cfg)
+        self.folder_lbl.configure(text=d)
+        self._update_status("Carpeta cambiada a: " + d)
+        self._scan(manual=True)
+
     def _scan(self, manual=False):
         if self.busy:
+            if manual:
+                self._update_status("Ya hay un análisis en curso, espera a que termine…")
             return
-        nuevos = processor.scan_folder(self.cfg["watch_folder"], self.db)
+        folder = self.cfg.get("watch_folder", "")
+        if not os.path.isdir(folder):
+            if manual:
+                messagebox.showwarning("Carpeta no válida",
+                                       "Esa carpeta no existe.\nPulsa 'Cambiar carpeta' para elegir otra.")
+            return
+        nuevos = processor.scan_folder(folder, self.db)
         if not nuevos:
             if manual:
-                self._update_status("No hay certificados nuevos.")
+                total = len(processor.all_files(folder))
+                if total == 0:
+                    messagebox.showinfo(
+                        "Analizar carpeta",
+                        "No hay certificados (PDF o imágenes) en la carpeta:\n\n" + folder +
+                        "\n\nArrastra ahí tus certificados y vuelve a pulsar 'Analizar carpeta'.")
+                elif messagebox.askyesno(
+                        "Analizar carpeta",
+                        f"No hay certificados nuevos: los {total} de la carpeta ya están analizados.\n\n"
+                        "¿Quieres volver a analizarlos todos desde cero?"):
+                    self._start_processing(processor.all_files(folder))
             return
+        self._start_processing(nuevos)
+
+    def _start_processing(self, nuevos):
         self.busy = True
-        self._update_status(f"Analizando {len(nuevos)} archivo(s)...")
+        try:
+            self.btn_scan.configure(state="disabled")
+        except Exception:
+            pass
+        self._show_progress(len(nuevos))
+        self._update_status("Analizando %d archivo(s)…" % len(nuevos))
         threading.Thread(target=self._worker, args=(nuevos,), daemon=True).start()
 
     def _worker(self, nuevos):
         results = []
-        for p, h in nuevos:
-            try:
-                rec = processor.process_file(p, h, self.cfg, self.tess)
-            except Exception as e:
-                rec = {"hash": h, "nombre": "", "numero_fiscal": "", "tipo_documento": "",
-                       "pais": "", "fecha_sello": "", "fecha_inicio": "", "fecha_fin": "",
-                       "observaciones": f"Error: {e}", "confianza": 0, "estado": "Sin revisar",
-                       "motor": "Error", "archivos": [os.path.basename(p)], "fecha_analisis": ""}
-            results.append(rec)
-        self.after(0, self._on_done, results)
+        n = len(nuevos)
+        try:
+            for i, (p, h) in enumerate(nuevos, 1):
+                self.after(0, self._progress, i - 1, n, os.path.basename(p))
+                try:
+                    rec = processor.process_file(p, h, self.cfg, self.tess)
+                except Exception as e:
+                    rec = {"hash": h, "nombre": "", "numero_fiscal": "", "tipo_documento": "",
+                           "pais": "", "fecha_sello": "", "fecha_inicio": "", "fecha_fin": "",
+                           "observaciones": "Error: %s" % e, "confianza": 0, "estado": "Sin revisar",
+                           "motor": "Error", "archivos": [os.path.basename(p)], "fecha_analisis": ""}
+                results.append(rec)
+                self.after(0, self._progress, i, n, os.path.basename(p))
+        finally:
+            self.after(0, self._on_done, results)
+
+    def _show_progress(self, n):
+        self.prog.set(0)
+        self.prog_lbl.configure(text="Preparando…")
+        if not self.prog_fr.winfo_ismapped():
+            self.prog_fr.pack(fill="x", padx=12, pady=(0, 6), before=self.table_cont)
+        self.update_idletasks()
+
+    def _progress(self, i, n, name):
+        try:
+            self.prog.set(i / max(1, n))
+        except Exception:
+            pass
+        self.prog_lbl.configure(text="%d/%d  ·  %s" % (i, n, name))
+
+    def _hide_progress(self):
+        try:
+            self.prog_fr.pack_forget()
+        except Exception:
+            pass
+
+    def _finish_busy(self):
+        self.busy = False
+        try:
+            self.btn_scan.configure(state="normal")
+        except Exception:
+            pass
 
     def _on_done(self, results):
-        self.busy = False
+        self._hide_progress()
         if self.cfg.get("auto_fill"):
             for rec in results:
                 store.upsert(self.db, rec)
             store.save_db(self.db)
             self._write_excel()
             self.refresh_table()
-            self._update_status(f"Procesados {len(results)} (auto-rellenado).")
+            self._finish_busy()
+            self._update_status("Listo: %d certificado(s) analizados." % len(results))
+            messagebox.showinfo("Análisis completado",
+                                "Se han analizado %d certificado(s).\nEl Excel se ha actualizado." % len(results))
         else:
-            self._review_queue = results
+            self._review_queue = list(results)
+            self._update_status("%d analizados. Revísalos uno a uno." % len(results))
             self._next_review()
 
     def _next_review(self):
@@ -528,7 +622,8 @@ class App(ctk.CTk):
             store.save_db(self.db)
             self._write_excel()
             self.refresh_table()
-            self._update_status("Revision completada.")
+            self._finish_busy()
+            self._update_status("Revision completada. Excel actualizado.")
             return
         rec = self._review_queue.pop(0)
         ReviewDialog(self, rec, self.cfg["watch_folder"], self._review_done)
@@ -543,6 +638,7 @@ class App(ctk.CTk):
             store.save_db(self.db)
             self._write_excel()
             self.refresh_table()
+            self._finish_busy()
             self._update_status("Resto auto-rellenado sin revisar.")
             return
         store.save_db(self.db)
