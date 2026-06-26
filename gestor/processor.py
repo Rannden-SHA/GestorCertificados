@@ -55,14 +55,16 @@ def process_file(path, h, cfg, tess_path):
     if fields is None:
         try:
             text, motor_lectura = extractor.extract_text(
-                path, tess_path=tess_path, lang=cfg.get("ocr_lang", "eng+spa"))
+                path, tess_path=tess_path, lang=cfg.get("ocr_lang", "eng+spa"),
+                dpi=cfg.get("ocr_dpi", 200))
             fields = parser.parse(text)
             motor = motor_lectura
             # si el texto incrustado dio mala confianza y hay OCR, reintenta con OCR
             if (motor_lectura == "Texto PDF" and fields.get("confianza", 0) < 55
                     and tess_path and path.lower().endswith(".pdf")):
                 try:
-                    ocr_text = extractor.ocr_pdf_force(path, tess_path, cfg.get("ocr_lang", "eng+spa"))
+                    ocr_text = extractor.ocr_pdf_force(path, tess_path, cfg.get("ocr_lang", "eng+spa"),
+                                                       dpi=cfg.get("ocr_dpi", 200))
                     ocr_fields = parser.parse(ocr_text)
                     if ocr_fields.get("confianza", 0) > fields.get("confianza", 0):
                         fields, motor = ocr_fields, "OCR"

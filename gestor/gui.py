@@ -9,11 +9,21 @@ from tkinter import filedialog, messagebox, ttk
 import customtkinter as ctk
 from PIL import Image
 
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+    _DND_OK = True
+except Exception:
+    _DND_OK = False
+
 from . import config, processor, store
+
+# Cada proceso de Tesseract usa 1 hilo: al analizar varios archivos en paralelo
+# evita saturar la CPU (la contencion multiplicaba por 2-3 el tiempo).
+os.environ.setdefault("OMP_THREAD_LIMIT", "1")
 
 AUTOR = "Adrián Gisbert"
 ANYO = "2026"
-VERSION = "1.1"
+VERSION = "1.2"
 
 
 def asset(name):
@@ -241,6 +251,11 @@ class SettingsDialog(ctk.CTkToplevel):
         v = tk.StringVar(value=self.cfg.get("ocr_lang", "eng+spa"))
         ctk.CTkEntry(frm, textvariable=v).pack(fill="x")
         self.w["ocr_lang"] = v
+        ctk.CTkLabel(frm, text="Velocidad/calidad OCR (DPI: menor = más rápido; 200 recomendado)",
+                     anchor="w").pack(fill="x", pady=(6, 0))
+        v = tk.StringVar(value=str(self.cfg.get("ocr_dpi", 200)))
+        ctk.CTkEntry(frm, textvariable=v, width=80).pack(anchor="w")
+        self.w["ocr_dpi"] = v
 
         ctk.CTkLabel(frm, text="Comportamiento", font=ctk.CTkFont(weight="bold")).pack(fill="x", pady=(14, 2))
         self.w["auto_fill"] = ctk.CTkSwitch(frm, text="Auto-rellenar sin panel de revision")
@@ -294,6 +309,10 @@ class SettingsDialog(ctk.CTkToplevel):
         out["model"] = self.w["model"].get()
         out["tesseract_path"] = self.w["tesseract_path"].get().strip()
         out["ocr_lang"] = self.w["ocr_lang"].get().strip() or "eng"
+        try:
+            out["ocr_dpi"] = max(120, min(400, int(self.w["ocr_dpi"].get())))
+        except Exception:
+            out["ocr_dpi"] = 200
         out["use_api"] = bool(self.w["use_api"].get())
         out["auto_fill"] = bool(self.w["auto_fill"].get())
         out["auto_watch"] = bool(self.w["auto_watch"].get())
@@ -314,7 +333,15 @@ class SettingsDialog(ctk.CTkToplevel):
 
 
 # --------------------------------------------------------------------------- #
-class App(ctk.CTk):
+if _DND_OK:
+    class _Root(ctk.CTk, TkinterDnD.DnDWrapper):
+        pass
+else:
+    class _Root(ctk.CTk):
+        pass
+
+
+class App(_Root):
     def __init__(self):
         super().__init__()
         self.cfg = config.load_config()
@@ -332,6 +359,13 @@ class App(ctk.CTk):
             self.iconbitmap(asset("icono.ico"))
         except Exception:
             pass
+        if _DND_OK:
+            try:
+                self.TkdndVersion = TkinterDnD._require(self)
+                self.drop_target_register(DND_FILES)
+                self.dnd_bind("<<Drop>>", self._on_drop)
+            except Exception:
+                pass
 
         self._build_top()
         self._build_table()
@@ -353,6 +387,8 @@ class App(ctk.CTk):
         ctk.CTkButton(top, text="Info", width=64, fg_color="gray",
                       command=self._open_about).pack(side="right", padx=4)
         ctk.CTkButton(top, text="Abrir Excel", width=104, command=self._open_excel).pack(side="right", padx=4)
+        ctk.CTkButton(top, text="Por caducar", width=104, fg_color="#c0840f", hover_color="#a06d0a",
+                      command=self._export_expiring).pack(side="right", padx=4)
 
         # --- fila de carpeta ---
         fr = ctk.CTkFrame(self)
@@ -368,6 +404,10 @@ class App(ctk.CTk):
                       command=self._choose_folder).pack(side="right", padx=4)
         ctk.CTkButton(fr, text="Abrir en Explorador", width=150, fg_color="gray",
                       command=self._open_folder).pack(side="right", padx=4)
+
+        if _DND_OK:
+            ctk.CTkLabel(self, text="Consejo: arrastra certificados (PDF o imágenes) directamente a esta ventana.",
+                         text_color="gray", font=ctk.CTkFont(size=11)).pack(anchor="w", padx=20, pady=(0, 2))
 
         # --- zona de progreso (oculta hasta que se procesa) ---
         self.prog_fr = ctk.CTkFrame(self)
@@ -481,6 +521,58 @@ class App(ctk.CTk):
         except Exception:
             pass
 
+    def _on_drop(self, event):
+        try:
+            paths = list(self.tk.splitlist(event.data))
+        except Exception:
+            paths = [event.data]
+        self._import_paths(paths)
+
+    def _import_paths(self, paths):
+        import shutil
+        folder = self.cfg.get("watch_folder", "")
+        if not os.path.isdir(folder):
+            messagebox.showwarning("Carpeta",
+                                   "Primero elige una carpeta válida con 'Cambiar carpeta'.")
+            return
+        copied = 0
+        for p in paths:
+            try:
+                if os.path.isfile(p) and os.path.splitext(p)[1].lower() in config.SUPPORTED_EXT:
+                    dst = os.path.join(folder, os.path.basename(p))
+                    if os.path.abspath(p) != os.path.abspath(dst):
+                        shutil.copy2(p, dst)
+                    copied += 1
+            except Exception:
+                pass
+        if copied:
+            self._update_status("%d archivo(s) añadidos a la carpeta. Analizando…" % copied)
+            self._scan(manual=True)
+        else:
+            messagebox.showinfo("Arrastrar y soltar",
+                                "No se añadió ningún certificado válido (solo PDF o imágenes).")
+
+    def _export_expiring(self):
+        rows = [r for r in self.db if r.get("estado") != "Omitido"]
+        expiring = [r for r in rows if store.caducidad_info(r, self.cfg)["en_aviso"] == "SI"]
+        if not expiring:
+            messagebox.showinfo(
+                "Por caducar",
+                "No hay certificados por caducar ni caducados con los ajustes actuales.\n\n"
+                "Puedes cambiar los días de aviso en Ajustes.")
+            return
+        base = os.path.dirname(config.excel_path_for(self.cfg)) or self.cfg.get("watch_folder", ".")
+        path = os.path.join(base, "Certificados_Por_Caducar.xlsx")
+        try:
+            store.write_excel(expiring, path, self.cfg)
+            os.startfile(path)
+            self._update_status("Exportados %d certificado(s) por caducar." % len(expiring))
+        except PermissionError:
+            messagebox.showwarning("Excel abierto",
+                                   "Cierra 'Certificados_Por_Caducar.xlsx' e inténtalo de nuevo.")
+        except Exception as e:
+            messagebox.showwarning("Exportar", "No se pudo exportar:\n%s" % e)
+
     def _edit_selected(self, _evt=None):
         sel = self.tree.selection()
         if not sel:
@@ -555,21 +647,29 @@ class App(ctk.CTk):
         self._update_status("Analizando %d archivo(s)…" % len(nuevos))
         threading.Thread(target=self._worker, args=(nuevos,), daemon=True).start()
 
+    def _safe_process(self, p, h):
+        try:
+            return processor.process_file(p, h, self.cfg, self.tess)
+        except Exception as e:
+            return {"hash": h, "nombre": "", "numero_fiscal": "", "tipo_documento": "",
+                    "pais": "", "fecha_sello": "", "fecha_inicio": "", "fecha_fin": "",
+                    "observaciones": "Error: %s" % e, "confianza": 0, "estado": "Sin revisar",
+                    "motor": "Error", "archivos": [os.path.basename(p)], "fecha_analisis": ""}
+
     def _worker(self, nuevos):
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         results = []
         n = len(nuevos)
+        workers = max(1, min(8, (os.cpu_count() or 2)))
+        self.after(0, self._progress, 0, n, "Procesando en paralelo…")
         try:
-            for i, (p, h) in enumerate(nuevos, 1):
-                self.after(0, self._progress, i - 1, n, os.path.basename(p))
-                try:
-                    rec = processor.process_file(p, h, self.cfg, self.tess)
-                except Exception as e:
-                    rec = {"hash": h, "nombre": "", "numero_fiscal": "", "tipo_documento": "",
-                           "pais": "", "fecha_sello": "", "fecha_inicio": "", "fecha_fin": "",
-                           "observaciones": "Error: %s" % e, "confianza": 0, "estado": "Sin revisar",
-                           "motor": "Error", "archivos": [os.path.basename(p)], "fecha_analisis": ""}
-                results.append(rec)
-                self.after(0, self._progress, i, n, os.path.basename(p))
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                futs = {ex.submit(self._safe_process, p, h): p for (p, h) in nuevos}
+                done = 0
+                for fut in as_completed(futs):
+                    results.append(fut.result())
+                    done += 1
+                    self.after(0, self._progress, done, n, os.path.basename(futs[fut]))
         finally:
             self.after(0, self._on_done, results)
 

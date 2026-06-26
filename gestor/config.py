@@ -24,7 +24,8 @@ DEFAULTS = {
     "tema": "System",                 # apariencia: System|Light|Dark
     "tabla_fuente": 10,               # tamano de letra de la tabla
     "tesseract_path": "",             # vacio = autodeteccion
-    "ocr_lang": "eng+spa",            # idiomas OCR (requiere packs instalados; cae a eng)
+    "ocr_lang": "eng",                # idiomas OCR (los escaneos suelen ser en ingles)
+    "ocr_dpi": 200,                   # resolucion OCR (menor = mas rapido; 200 va bien)
     "auto_watch": True,               # vigilar la carpeta al abrir
 }
 

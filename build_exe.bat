@@ -7,6 +7,7 @@ python -m PyInstaller --noconfirm --onefile --windowed --name GestorCertificados
   --splash "gestor\assets\splash.png" ^
   --collect-all customtkinter ^
   --collect-all anthropic ^
+  --collect-all tkinterdnd2 ^
   --add-data "gestor\assets;gestor\assets" ^
   --add-data "gestor\seed_data.json;." ^
   run.py
